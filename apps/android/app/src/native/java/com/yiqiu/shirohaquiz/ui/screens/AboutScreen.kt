@@ -87,6 +87,12 @@ fun AboutScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "本安装包是 Shiroha Quiz 的 GPL-3.0 衍生版「焊工刷题」，首次打开会载入预置的熔化焊接与热切割作业理论题库。以后更新安装包时，只替换这份预置题库，自己导入的题库不动。上游项目、贡献者与许可证以本页链接和仓库 LICENSE 为准。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         ActionPillButton(

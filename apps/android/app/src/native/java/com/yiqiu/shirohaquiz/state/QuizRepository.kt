@@ -246,6 +246,10 @@ object QuizRepository {
     private const val KEY_AI_MAX_QUESTIONS = "ai_max_questions"
     private const val KEY_AI_TIMEOUT_SECONDS = "ai_timeout_seconds"
     private const val KEY_AI_REFACTOR_MAX_CHARS = "ai_refactor_max_chars"
+    private const val KEY_BUNDLED_QUIZBANK_SEED = "bundled_quizbank_seed_id"
+    private const val KEY_BUNDLED_QUIZBANK_BANK_ID = "bundled_quizbank_bank_id"
+    const val BUNDLED_QUIZBANK_ASSET = "banks/rhhj-quizbank-v3.json"
+    const val BUNDLED_QUIZBANK_SEED_ID = "rhhj-quizbank-v3"
     private const val DAY_MILLIS = 24L * 60L * 60L * 1000L
 
     val banks = mutableStateListOf<QuizBank>()
@@ -414,6 +418,8 @@ object QuizRepository {
 
     private var initialized by mutableStateOf(false)
     private var appContext: Context? = null
+    private var bundledQuizBankSeedToPersist: String? = null
+    private var bundledQuizBankIdToPersist: String? = null
 
     var examQuestions by mutableStateOf<List<Question>>(emptyList())
         private set
@@ -647,6 +653,188 @@ object QuizRepository {
         }
     }
 
+    private data class BundledSeedRevision(
+        val seedId: String,
+        val bankName: String,
+        val groupName: String,
+        val questionCount: Int,
+        val firstQuestionPrefix: String
+    )
+
+    /**
+     * Older bundled banks this build knows how to replace. Add the current
+     * revision here when shipping the next question-bank update.
+     */
+    private val previousBundledSeeds = listOf(
+        BundledSeedRevision(
+            seedId = "rhhj-quizbank-v2",
+            bankName = "熔化焊接与热切割作业·理论题库v2",
+            groupName = "焊工证",
+            questionCount = 1784,
+            firstQuestionPrefix = "特种作业人员必须经专门安全技术培训"
+        )
+    )
+
+    /**
+     * Import or upgrade the welding bank shipped in assets.
+     *
+     * Fresh installs use [parseImportJsonBank] and [importBank]. An older seed
+     * marker replaces that seeded bank in place via [replaceBankQuestions],
+     * keeping the bank id and reusing question ids when the question still
+     * matches, so wrong-book, favorite, and slash records can follow. Banks the
+     * user imported are left alone. The seed id and bank id are stored with the
+     * save; the same id on a later launch does not import again.
+     *
+     * @return true when this call imported or replaced the bundled bank.
+     */
+    fun seedBundledQuestionBank(context: Context): Boolean {
+        if (!initialized) init(context)
+        val app = context.applicationContext
+        val prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val installedSeed = prefs.getString(KEY_BUNDLED_QUIZBANK_SEED, null)
+        if (installedSeed == BUNDLED_QUIZBANK_SEED_ID) return false
+        val rawText = runCatching {
+            app.assets.open(BUNDLED_QUIZBANK_ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        }.getOrNull() ?: return false
+        val parsed = parseImportJsonBank(rawText) ?: return false
+        val groupName = normalizeBankGroupName(parsed.groupName)
+
+        val previous = findPreviousBundledBank(
+            installedSeed = installedSeed,
+            storedBankId = prefs.getString(KEY_BUNDLED_QUIZBANK_BANK_ID, null)
+        )
+        if (previous != null) {
+            val aligned = alignBundledQuestionIds(previous.bank.questions, parsed.questions)
+            val targetName = if (previous.officialTitle) parsed.name else previous.bank.name
+            bundledQuizBankSeedToPersist = BUNDLED_QUIZBANK_SEED_ID
+            bundledQuizBankIdToPersist = previous.bank.id
+            return try {
+                if (!replaceBankQuestions(app, previous.bank.id, aligned)) return false
+                refreshBundledFavoriteSnapshots(previous.bank.id)
+                updateBankInfo(app, previous.bank.id, parsed.groupName, targetName)
+                prefs.getString(KEY_BUNDLED_QUIZBANK_SEED, null) == BUNDLED_QUIZBANK_SEED_ID
+            } finally {
+                bundledQuizBankSeedToPersist = null
+                bundledQuizBankIdToPersist = null
+            }
+        }
+
+        val alreadyPresent = banks.firstOrNull { bank ->
+            bank.name == parsed.name &&
+                normalizeBankGroupName(bank.groupName) == groupName &&
+                bank.questions.size == parsed.questions.size
+        }
+        if (alreadyPresent != null) {
+            bundledQuizBankSeedToPersist = BUNDLED_QUIZBANK_SEED_ID
+            bundledQuizBankIdToPersist = alreadyPresent.id
+            try {
+                updateBankInfo(app, alreadyPresent.id, alreadyPresent.groupName, alreadyPresent.name)
+            } finally {
+                bundledQuizBankSeedToPersist = null
+                bundledQuizBankIdToPersist = null
+            }
+            return false
+        }
+
+        bundledQuizBankSeedToPersist = BUNDLED_QUIZBANK_SEED_ID
+        try {
+            importBank(
+                context = app,
+                name = parsed.name,
+                questions = parsed.questions,
+                groupName = parsed.groupName
+            )
+        } finally {
+            bundledQuizBankSeedToPersist = null
+            bundledQuizBankIdToPersist = null
+        }
+        return prefs.getString(KEY_BUNDLED_QUIZBANK_SEED, null) == BUNDLED_QUIZBANK_SEED_ID
+    }
+
+    private data class PreviousBundledBank(
+        val bank: QuizBank,
+        val officialTitle: Boolean
+    )
+
+    private fun findPreviousBundledBank(installedSeed: String?, storedBankId: String?): PreviousBundledBank? {
+        if (installedSeed.isNullOrBlank() || installedSeed == BUNDLED_QUIZBANK_SEED_ID) return null
+        val revision = previousBundledSeeds.firstOrNull { it.seedId == installedSeed }
+        if (!storedBankId.isNullOrBlank()) {
+            val stored = banks.firstOrNull { it.id == storedBankId } ?: return null
+            val officialTitle = revision != null && isOfficialBundledTitle(stored.name, revision.bankName)
+            return PreviousBundledBank(stored, officialTitle)
+        }
+        if (revision == null) return null
+        val group = normalizeBankGroupName(revision.groupName)
+        val sameSize = banks.filter { bank ->
+            normalizeBankGroupName(bank.groupName) == group && bank.questions.size == revision.questionCount
+        }
+        sameSize.firstOrNull { it.name == revision.bankName }?.let {
+            return PreviousBundledBank(it, officialTitle = true)
+        }
+        val named = sameSize.filter { isOfficialBundledTitle(it.name, revision.bankName) }
+        if (named.size == 1) return PreviousBundledBank(named.single(), officialTitle = true)
+        val byStem = sameSize.filter { bank ->
+            bank.questions.any { it.question.startsWith(revision.firstQuestionPrefix) }
+        }
+        return byStem.singleOrNull()?.let { PreviousBundledBank(it, officialTitle = false) }
+    }
+
+    private fun isOfficialBundledTitle(name: String, officialName: String): Boolean {
+        return name == officialName || name.startsWith("$officialName ")
+    }
+
+    private fun alignBundledQuestionIds(previous: List<Question>, incoming: List<Question>): List<Question> {
+        val claimed = mutableSetOf<String>()
+        val byFingerprint = previous.groupBy(::questionMigrationFingerprint)
+        return incoming.map { question ->
+            val fingerprintMatches = byFingerprint[questionMigrationFingerprint(question)].orEmpty()
+                .filter { it.id.isNotBlank() && it.id !in claimed }
+            val match = when {
+                fingerprintMatches.size == 1 -> fingerprintMatches.single()
+                fingerprintMatches.size > 1 -> fingerprintMatches.firstOrNull { it.number.trim() == question.number.trim() }
+                    ?: fingerprintMatches.first()
+                else -> {
+                    val stem = normalizedQuestionStem(question.question)
+                    if (stem.isBlank()) {
+                        null
+                    } else {
+                        previous.filter { candidate ->
+                            candidate.id.isNotBlank() &&
+                                candidate.id !in claimed &&
+                                candidate.type == question.type &&
+                                normalizedQuestionStem(candidate.question) == stem
+                        }.singleOrNull()
+                    }
+                }
+            }
+            if (match == null) {
+                question
+            } else {
+                claimed += match.id
+                question.copy(id = match.id)
+            }
+        }
+    }
+
+    private fun normalizedQuestionStem(value: String): String {
+        return Normalizer.normalize(value, Normalizer.Form.NFKC)
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+            .lowercase(Locale.ROOT)
+    }
+
+    private fun refreshBundledFavoriteSnapshots(bankId: String) {
+        val bank = banks.firstOrNull { it.id == bankId } ?: return
+        val questions = bank.questions.associateBy { it.id }
+        for (index in favoriteQuestions.indices) {
+            val entry = favoriteQuestions[index]
+            if (entry.bankId != bankId) continue
+            val updated = questions[entry.question.id] ?: continue
+            favoriteQuestions[index] = entry.copy(bankName = bank.name, question = updated)
+        }
+    }
+
     fun importBank(
         context: Context,
         name: String,
@@ -673,6 +861,9 @@ object QuizRepository {
         practiceScopeValue = bank.id
         resetPracticeState()
         resetExam()
+        if (bundledQuizBankSeedToPersist != null) {
+            bundledQuizBankIdToPersist = bank.id
+        }
         persist()
     }
 
@@ -4381,6 +4572,8 @@ object QuizRepository {
         resetPracticeState()
         initialized = false
         appContext = null
+        bundledQuizBankSeedToPersist = null
+        bundledQuizBankIdToPersist = null
         resetExam()
     }
 
@@ -5414,7 +5607,7 @@ object QuizRepository {
     private fun persist() {
         val context = appContext ?: return
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
+        val editor = prefs.edit()
             .putString(KEY_BANKS, banksToJson(banks))
             .putString(KEY_ACTIVE_BANK_ID, activeBankId)
             .putString(KEY_PRACTICE_SCOPE_TYPE, practiceScopeType)
@@ -5485,7 +5678,13 @@ object QuizRepository {
             .putInt(KEY_AI_MAX_QUESTIONS, aiMaxQuestions)
             .putInt(KEY_AI_TIMEOUT_SECONDS, aiTimeoutSeconds)
             .putInt(KEY_AI_REFACTOR_MAX_CHARS, aiRefactorMaxChars)
-            .apply()
+        bundledQuizBankSeedToPersist?.let { seedId ->
+            editor.putString(KEY_BUNDLED_QUIZBANK_SEED, seedId)
+        }
+        bundledQuizBankIdToPersist?.let { bankId ->
+            editor.putString(KEY_BUNDLED_QUIZBANK_BANK_ID, bankId)
+        }
+        editor.apply()
     }
 
     private fun banksToJson(banks: List<QuizBank>, assetMapping: MutableMap<String, BackupAsset>? = null): String {

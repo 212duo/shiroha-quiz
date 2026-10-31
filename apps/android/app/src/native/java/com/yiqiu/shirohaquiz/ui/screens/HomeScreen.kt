@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -97,7 +98,7 @@ fun HomeScreen(
                 .padding(horizontal = ShirohaSpacing.Xl, vertical = ShirohaSpacing.Sm)
         ) {
             ShirohaHeader(
-                kicker = "Shiroha Quiz",
+                kicker = stringResource(R.string.app_name),
                 title = "首页",
                 subtitle = ""
             )

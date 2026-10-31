@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         QuizRepository.init(applicationContext)
+        QuizRepository.seedBundledQuestionBank(applicationContext)
         DocumentRecognitionManager.init(applicationContext)
         com.yiqiu.shirohaquiz.sync.webdav.WebDavAutoBackup.schedule(applicationContext)
         LauncherIconSwitcher.applyShirohaMode(applicationContext, QuizRepository.shirohaModeEnabled)
