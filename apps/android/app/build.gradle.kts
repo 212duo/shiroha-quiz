@@ -29,8 +29,8 @@ android {
             testInstrumentationRunner = "com.yiqiu.shirohaquiz.state.QuizRepositoryCloudRestoreSafetyInstrumentation"
             // Welding fork installs beside upstream com.reqir.shirohaquiz.
             applicationId = "com.reqir.shirohaquiz.welding"
-            versionCode = 214
-            versionName = "0.9.14"
+            versionCode = 215
+            versionName = "0.9.14-w2"
         }
     }
 
