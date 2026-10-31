@@ -27,7 +27,8 @@ android {
         create("native") {
             dimension = "variant"
             testInstrumentationRunner = "com.yiqiu.shirohaquiz.state.QuizRepositoryCloudRestoreSafetyInstrumentation"
-            applicationId = "com.reqir.shirohaquiz"
+            // Welding fork installs beside upstream com.reqir.shirohaquiz.
+            applicationId = "com.reqir.shirohaquiz.welding"
             versionCode = 214
             versionName = "0.9.14"
         }

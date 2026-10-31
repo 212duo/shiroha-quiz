@@ -246,6 +246,9 @@ object QuizRepository {
     private const val KEY_AI_MAX_QUESTIONS = "ai_max_questions"
     private const val KEY_AI_TIMEOUT_SECONDS = "ai_timeout_seconds"
     private const val KEY_AI_REFACTOR_MAX_CHARS = "ai_refactor_max_chars"
+    private const val KEY_BUNDLED_QUIZBANK_SEED = "bundled_quizbank_seed_id"
+    const val BUNDLED_QUIZBANK_ASSET = "banks/rhhj-quizbank-v2.json"
+    const val BUNDLED_QUIZBANK_SEED_ID = "rhhj-quizbank-v2"
     private const val DAY_MILLIS = 24L * 60L * 60L * 1000L
 
     val banks = mutableStateListOf<QuizBank>()
@@ -414,6 +417,7 @@ object QuizRepository {
 
     private var initialized by mutableStateOf(false)
     private var appContext: Context? = null
+    private var bundledQuizBankSeedToPersist: String? = null
 
     var examQuestions by mutableStateOf<List<Question>>(emptyList())
         private set
@@ -645,6 +649,49 @@ object QuizRepository {
                 .putInt(KEY_QUESTION_ID_INTEGRITY_MIGRATION_VERSION, QUESTION_ID_INTEGRITY_MIGRATION_VERSION)
                 .apply()
         }
+    }
+
+    /**
+     * First-launch import of the welding bank shipped in assets.
+     *
+     * Uses [parseImportJsonBank] and [importBank], the same parse-and-save path as
+     * 「导入」→「选择题库文件」→「保存新题库」. A preference marker written in the same
+     * save as the bank stops a second copy on later launches and app updates.
+     * Clearing app data removes the marker and seeds again, like a fresh install.
+     *
+     * @return true when this call saved a new bank.
+     */
+    fun seedBundledQuestionBank(context: Context): Boolean {
+        if (!initialized) init(context)
+        val app = context.applicationContext
+        val prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (prefs.getString(KEY_BUNDLED_QUIZBANK_SEED, null) == BUNDLED_QUIZBANK_SEED_ID) {
+            return false
+        }
+        val rawText = runCatching {
+            app.assets.open(BUNDLED_QUIZBANK_ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        }.getOrNull() ?: return false
+        val parsed = parseImportJsonBank(rawText) ?: return false
+        val groupName = normalizeBankGroupName(parsed.groupName)
+        val alreadyPresent = banks.any { bank ->
+            bank.name == parsed.name && normalizeBankGroupName(bank.groupName) == groupName
+        }
+        if (alreadyPresent) {
+            prefs.edit().putString(KEY_BUNDLED_QUIZBANK_SEED, BUNDLED_QUIZBANK_SEED_ID).commit()
+            return false
+        }
+        bundledQuizBankSeedToPersist = BUNDLED_QUIZBANK_SEED_ID
+        try {
+            importBank(
+                context = app,
+                name = parsed.name,
+                questions = parsed.questions,
+                groupName = parsed.groupName
+            )
+        } finally {
+            bundledQuizBankSeedToPersist = null
+        }
+        return prefs.getString(KEY_BUNDLED_QUIZBANK_SEED, null) == BUNDLED_QUIZBANK_SEED_ID
     }
 
     fun importBank(
@@ -4381,6 +4428,7 @@ object QuizRepository {
         resetPracticeState()
         initialized = false
         appContext = null
+        bundledQuizBankSeedToPersist = null
         resetExam()
     }
 
@@ -5414,7 +5462,7 @@ object QuizRepository {
     private fun persist() {
         val context = appContext ?: return
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit()
+        val editor = prefs.edit()
             .putString(KEY_BANKS, banksToJson(banks))
             .putString(KEY_ACTIVE_BANK_ID, activeBankId)
             .putString(KEY_PRACTICE_SCOPE_TYPE, practiceScopeType)
@@ -5485,7 +5533,10 @@ object QuizRepository {
             .putInt(KEY_AI_MAX_QUESTIONS, aiMaxQuestions)
             .putInt(KEY_AI_TIMEOUT_SECONDS, aiTimeoutSeconds)
             .putInt(KEY_AI_REFACTOR_MAX_CHARS, aiRefactorMaxChars)
-            .apply()
+        bundledQuizBankSeedToPersist?.let { seedId ->
+            editor.putString(KEY_BUNDLED_QUIZBANK_SEED, seedId)
+        }
+        editor.apply()
     }
 
     private fun banksToJson(banks: List<QuizBank>, assetMapping: MutableMap<String, BackupAsset>? = null): String {
